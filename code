@@ -1,0 +1,593 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+
+#define PARK_OPEN_TIME_MINUTES (8 * 60)
+#define PARK_CLOSE_TIME_MINUTES (17 * 60)
+#define NUM_SLIDES 3
+#define NUM_BOOTHS 3
+#define MIN_VISITORS 100
+#define MAX_VISITORS 150
+#define DAILY_SUMMARY_FILE "daily_summaries.bin"
+#define VISITORS_ARRIVAL_END_TIME (15 * 60) 
+
+typedef enum {
+    AT_HOME,
+    AT_BOOTH_QUEUE,
+    AT_BOOTH,
+    AT_SLIDE_QUEUE,
+    RIDING_SLIDE,
+    EXITED
+} PersonStatus;
+
+typedef enum {
+    FREE,
+    OCCUPIED
+} FacilityStatus;
+
+typedef struct Person {
+    int id;
+    PersonStatus status;
+    int arrival_time;
+    int entry_time;
+    int exit_time;
+    int booth_service_time;
+    int booth_wait_time;
+    int slide_wait_time;
+    int slides_to_ride;
+    int slides_ridden;
+    struct Person* next;
+} Person;
+
+typedef struct Slide {
+    int id;
+    FacilityStatus status;
+    int ride_time;
+    int people_count;
+    Person* queue;
+    int ride_end_time;
+} Slide;
+
+typedef struct TicketBooth {
+    int id;
+    FacilityStatus status;
+    int service_end_time;
+    Person* queue;
+} TicketBooth;
+
+typedef struct DailySummary {
+    int total_visitors;
+    int avg_park_time;
+    int avg_booth_service_time;
+    int avg_booth_wait_time;
+    int avg_slide_wait_time;
+    int busiest_slide_id;
+} DailySummary;
+
+typedef struct OverallSummary {
+    int total_days;
+    int total_visitors;
+    double avg_park_time;
+    double avg_booth_service_time;
+    double avg_booth_wait_time;
+    double avg_slide_wait_time;
+    int busiest_slide_id;
+    int busiest_slide_rides;
+} OverallSummary;
+
+//פונקציה בשביל לקבל זמן שירות רנדומאלי עבור כל מבקר
+int get_random_service_time(); 
+
+//פונקציה בשביל לקבל זמן רנדומאלי בשביל לדעת כמה זמן לוקח לכל מבקר להתגלש במגלשה
+int get_random_ride_time();   
+
+//פונקציה בשביל לקבל כמות מבקרים רנדומאלית בכל יום
+int get_random_visitor_count();
+
+//פונקציה שמריצה את הסימולציה עצמה
+void runSimulation();
+
+//פונקציה שמוציאה למסך את הסיכום היומי
+void showOverallSummary();
+
+//פונקציה ששומרת את כל המידע של הסומולציה
+void saveDailySummary(DailySummary* summary);
+
+//פונקציה שטוענת את נתוני הסימולציה מהקובץ
+void loadOverallSummary(OverallSummary* summary);
+
+//הפונקציה הזו אחראית לעדכן את המצב של המתקנים בפארק (קופות ומגלשות).
+// היא בודקת אם שירות מסוים הסתיים, ומשנה את סטטוס המתקן בהתאם.
+void updateFacilityStatus(int current_time, TicketBooth* booths, Slide* slides);
+
+//הפונקציה מחלקת את המבקרים בין מתקנים פנויים ודואגת שהם יתקדמו בתהליך הביקור שלהם.
+void manageVisitors(Person* people, int num_people, TicketBooth* booths, Slide* slides, int current_time);
+
+//פונקציה שמוסיפה מבקרים לסוף התור
+void enqueue(Person** queue_head, Person* person); 
+
+//פונקציה שמורידה מבקרים מהתור
+Person* dequeue(Person** queue_head); 
+
+//פונקציה שמוצאת את המגלשה הכי פופולארית ומסדרת את המגלשות לפי הפופולאריות
+void sortSlidesByPopularity(Slide* slides);
+
+//פונקציה שמוצאת את הקופה שהתור בה הכי קצר
+int findLeastBusyBooth(TicketBooth* booths);
+
+////פונקציה שמוצאת את המגלשה שהתור בה הכי קצר
+int findLeastBusySlide(Slide* slides);
+
+//פונקציה שמחשבת את הממוצע של הסיכום ומדפיסה אותו
+void calculateAndPrintDailySummary(Person* people, int num_people, TicketBooth* booths, Slide* slides, DailySummary* summary);
+
+//פונקציה שמדפיסה את הזמן שבו מתבצעים אירועים שונים
+void printTime(int total_minutes);
+
+
+Person* main_booth_queue = NULL;
+
+//הפונקציה הראשית
+int main() {
+    srand(time(NULL));
+    int choice;
+
+    printf("Welcome to the Water Park Simulation\n");
+    printf("1 - Start a new simulation day\n");
+    printf("2 - Show overall summary\n");
+    printf("Please enter your choice: ");
+    scanf_s("%d", &choice);
+
+    if (choice == 1) {
+        runSimulation();
+    }
+    else if (choice == 2) {
+        showOverallSummary();
+    }
+    else {
+        printf("Invalid choice - starting the simulation.\n");
+        runSimulation();
+    }
+    return 0;
+}
+
+void printTime(int total_minutes) {
+    int hours = total_minutes / 60;
+    int minutes = total_minutes % 60;
+    printf("Time %d:%02d: ", hours, minutes);
+}
+
+int get_random_visitor_count() {
+    return (rand() % (MAX_VISITORS - MIN_VISITORS + 1)) + MIN_VISITORS;
+}
+
+int get_random_service_time() {
+    int min_time = 5;
+    int max_time = 15;
+    return (rand() % (max_time - min_time + 1)) + min_time;
+}
+
+int get_random_ride_time() {
+    int min_time = 5;
+    int max_time = 10;
+    return (rand() % (max_time - min_time + 1)) + min_time;
+}
+
+int findLeastBusyBooth(TicketBooth* booths) {
+    int min_queue_size = -1;
+    int min_booth_idx = -1;
+    for (int i = 0; i < NUM_BOOTHS; i++) {
+        int current_queue_size = 0;
+        Person* current_person = booths[i].queue;
+        while (current_person != NULL) {
+            current_queue_size++;
+            current_person = current_person->next;
+        }
+        if (min_queue_size == -1 || current_queue_size < min_queue_size) {
+            min_queue_size = current_queue_size;
+            min_booth_idx = i;
+        }
+    }
+    return min_booth_idx;
+}
+
+int findLeastBusySlide(Slide* slides) {
+    int min_queue_size = -1;
+    int min_slide_idx = -1;
+    for (int i = 0; i < NUM_SLIDES; i++) {
+        int current_queue_size = 0;
+        Person* current_person = slides[i].queue;
+        while (current_person != NULL) {
+            current_queue_size++;
+            current_person = current_person->next;
+        }
+        if (min_queue_size == -1 || current_queue_size < min_queue_size) {
+            min_queue_size = current_queue_size;
+            min_slide_idx = i;
+        }
+    }
+    return min_slide_idx;
+}
+
+void enqueue(Person** queue_head, Person* person) {
+    person->next = NULL;
+    if (*queue_head == NULL) {
+        *queue_head = person;
+    }
+    else {
+        Person* current = *queue_head;
+        while (current->next != NULL) {
+            current = current->next;
+        }
+        current->next = person;
+    }
+}
+
+Person* dequeue(Person** queue_head) {
+    if (*queue_head == NULL) {
+        return NULL;
+    }
+    Person* dequeued_person = *queue_head;
+    *queue_head = dequeued_person->next;
+    dequeued_person->next = NULL;
+    return dequeued_person;
+}
+
+void runSimulation() {
+    int num_people = get_random_visitor_count();
+    Person* people = (Person*)malloc(sizeof(Person) * num_people);
+    if (people == NULL) {
+        printf("Memory allocation failed for people.\n");
+        return;
+    }
+
+    TicketBooth booths[NUM_BOOTHS];
+    Slide slides[NUM_SLIDES];
+    DailySummary daily_summary;
+
+    main_booth_queue = NULL;
+
+    for (int i = 0; i < NUM_BOOTHS; i++) {
+        booths[i].id = i + 1;
+        booths[i].status = FREE;
+        booths[i].queue = NULL;
+        booths[i].service_end_time = 0;
+    }
+
+    for (int i = 0; i < NUM_SLIDES; i++) {
+        slides[i].id = i + 1;
+        slides[i].status = FREE;
+        slides[i].queue = NULL;
+        slides[i].people_count = 0;
+        slides[i].ride_end_time = 0;
+    }
+
+    int arrival_interval = (VISITORS_ARRIVAL_END_TIME - PARK_OPEN_TIME_MINUTES) / num_people;
+    for (int i = 0; i < num_people; i++) {
+        people[i].id = i + 1;
+        people[i].status = AT_HOME;
+        people[i].arrival_time = PARK_OPEN_TIME_MINUTES + (i * arrival_interval) + (rand() % arrival_interval);
+        people[i].slides_to_ride = (rand() % 3) + 1;
+        people[i].slides_ridden = 0;
+        people[i].booth_wait_time = 0;
+        people[i].booth_service_time = 0;
+        people[i].slide_wait_time = 0;
+        people[i].entry_time = 0;
+        people[i].exit_time = 0;
+        people[i].next = NULL;
+    }
+
+    printf("\n--- Starting Simulation ---\n");
+
+    for (int current_time = PARK_OPEN_TIME_MINUTES; current_time <= PARK_CLOSE_TIME_MINUTES; current_time++) {
+
+        // Handle closing time exits first
+        if (current_time >= (16 * 60 + 30) && current_time < (17 * 60 - 1)) {
+            for (int i = 0; i < num_people; i++) {
+                if (people[i].status != AT_HOME && people[i].status != EXITED && (rand() % 5) == 0) {
+                    people[i].status = EXITED;
+                    people[i].exit_time = current_time;
+                    printTime(current_time);
+                    printf("Visitor %d is leaving the park as it gets late.\n", people[i].id);
+                }
+            }
+        }
+
+        if (current_time == (17 * 60 - 1)) {
+            for (int i = 0; i < num_people; i++) {
+                if (people[i].status != AT_HOME && people[i].status != EXITED) {
+                    people[i].status = EXITED;
+                    people[i].exit_time = current_time;
+                    printTime(current_time);
+                    printf("Visitor %d has EXITED the park at closing time.\n", people[i].id);
+                }
+            }
+        }
+
+        if (current_time < (17 * 60 - 1)) {
+            for (int i = 0; i < num_people; i++) {
+                if (people[i].status == AT_HOME && people[i].arrival_time == current_time) {
+                    enqueue(&main_booth_queue, &people[i]);
+                    people[i].status = AT_BOOTH_QUEUE;
+                }
+            }
+
+            updateFacilityStatus(current_time, booths, slides);
+            manageVisitors(people, num_people, booths, slides, current_time);
+        }
+
+        if (current_time == PARK_CLOSE_TIME_MINUTES) {
+            printf("The park is now Closed\n");
+        }
+    }
+
+    calculateAndPrintDailySummary(people, num_people, booths, slides, &daily_summary);
+
+    free(people);
+}
+
+void updateFacilityStatus(int current_time, TicketBooth* booths, Slide* slides) {
+    for (int i = 0; i < NUM_BOOTHS; i++) {
+        if (booths[i].status == OCCUPIED && current_time >= booths[i].service_end_time) {
+            booths[i].status = FREE;
+            printTime(current_time);
+            printf("Ticket Booth %d is now FREE\n", booths[i].id);
+        }
+    }
+
+    for (int i = 0; i < NUM_SLIDES; i++) {
+        if (slides[i].status == OCCUPIED && current_time >= slides[i].ride_end_time) {
+            slides[i].status = FREE;
+            printTime(current_time);
+            printf("Slide %d is now FREE\n", slides[i].id);
+        }
+    }
+}
+
+void manageVisitors(Person* people, int num_people, TicketBooth* booths, Slide* slides, int current_time) {
+    for (int i = 0; i < NUM_BOOTHS; i++) {
+        if (booths[i].status == FREE && main_booth_queue != NULL) {
+            Person* person_to_serve = dequeue(&main_booth_queue);
+            if (person_to_serve != NULL) {
+                booths[i].status = OCCUPIED;
+                int service_time = get_random_service_time();
+                booths[i].service_end_time = current_time + service_time;
+
+                person_to_serve->booth_wait_time = current_time - person_to_serve->arrival_time;
+                person_to_serve->booth_service_time = service_time;
+                person_to_serve->entry_time = current_time;
+                person_to_serve->status = AT_BOOTH;
+
+                printTime(current_time);
+                printf("Ticket Booth %d is now OCCUPIED by Visitor %d\n",
+                    booths[i].id, person_to_serve->id);
+            }
+        }
+    }
+
+    for (int i = 0; i < NUM_SLIDES; i++) {
+        if (slides[i].status == FREE && slides[i].queue != NULL) {
+            Person* person = dequeue(&slides[i].queue);
+            if (person != NULL) {
+                slides[i].status = OCCUPIED;
+                int ride_time = get_random_ride_time();
+                slides[i].ride_end_time = current_time + ride_time;
+                slides[i].people_count++;
+
+                person->slide_wait_time += (current_time - person->entry_time);
+                person->slides_ridden++;
+                person->status = RIDING_SLIDE;
+
+                printTime(current_time);
+                printf("Slide %d is now OCCUPIED by Visitor %d\n",
+                    slides[i].id, person->id);
+            }
+        }
+    }
+
+    for (int i = 0; i < num_people; i++) {
+        if (people[i].status == AT_BOOTH && people[i].entry_time + people[i].booth_service_time == current_time) {
+            int least_busy_slide_idx = findLeastBusySlide(slides);
+            if (least_busy_slide_idx != -1) {
+                enqueue(&slides[least_busy_slide_idx].queue, &people[i]);
+                people[i].status = AT_SLIDE_QUEUE;
+                people[i].entry_time = current_time;
+            }
+        }
+
+        if (people[i].status == RIDING_SLIDE) {
+            for (int j = 0; j < NUM_SLIDES; j++) {
+                if (slides[j].ride_end_time == current_time) {
+                    if (people[i].slides_ridden < people[i].slides_to_ride) {
+                        int least_busy_slide_idx = findLeastBusySlide(slides);
+                        if (least_busy_slide_idx != -1) {
+                            enqueue(&slides[least_busy_slide_idx].queue, &people[i]);
+                            people[i].status = AT_SLIDE_QUEUE;
+                            people[i].entry_time = current_time;
+                        }
+                    }
+                    else {
+                        people[i].status = EXITED;
+                        people[i].exit_time = current_time;
+                        printTime(current_time);
+                        printf("Visitor %d has EXITED the park.\n", people[i].id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void sortSlidesByPopularity(Slide* slides) {
+    int max_idx;
+    Slide temp;
+    for (int i = 0; i < NUM_SLIDES - 1; i++) {
+        max_idx = i;
+        for (int j = i + 1; j < NUM_SLIDES; j++) {
+            if (slides[j].people_count > slides[max_idx].people_count) {
+                max_idx = j;
+            }
+        }
+        temp = slides[max_idx];
+        slides[max_idx] = slides[i];
+        slides[i] = temp;
+    }
+}
+
+void calculateAndPrintDailySummary(Person* people, int num_people, TicketBooth* booths, Slide* slides, DailySummary* summary) {
+    double total_park_time = 0;
+    double total_booth_service_time = 0;
+    double total_booth_wait_time = 0;
+    double total_slide_wait_time = 0;
+    int booth_service_count = 0;
+    int waited_visitors_count = 0;
+
+    int total_visitors = num_people;
+
+    for (int i = 0; i < num_people; i++) {
+        if (people[i].status != AT_HOME) {
+            if (people[i].status == EXITED && people[i].exit_time >= people[i].arrival_time) {
+                total_park_time += (people[i].exit_time - people[i].arrival_time);
+            }
+            else if (people[i].status != EXITED) {
+                total_park_time += (PARK_CLOSE_TIME_MINUTES - people[i].arrival_time);
+            }
+            else {
+                total_park_time += 0;
+            }
+
+            total_booth_service_time += people[i].booth_service_time;
+            if (people[i].booth_wait_time > 0) {
+                total_booth_wait_time += people[i].booth_wait_time;
+                waited_visitors_count++;
+            }
+            total_slide_wait_time += people[i].slide_wait_time;
+            booth_service_count++;
+        }
+    }
+
+    summary->total_visitors = total_visitors;
+    if (total_visitors > 0) {
+        summary->avg_park_time = (int)(total_park_time / total_visitors);
+    }
+    else {
+        summary->avg_park_time = 0;
+    }
+
+    if (booth_service_count > 0) {
+        summary->avg_booth_service_time = (int)(total_booth_service_time / booth_service_count);
+    }
+    else {
+        summary->avg_booth_service_time = 0;
+    }
+
+    if (waited_visitors_count > 0) {
+        summary->avg_booth_wait_time = (int)(total_booth_wait_time / waited_visitors_count);
+    }
+    else {
+        summary->avg_booth_wait_time = 0;
+    }
+
+    int total_slides_ridden = 0;
+    for (int i = 0; i < NUM_SLIDES; i++) {
+        total_slides_ridden += slides[i].people_count;
+    }
+    if (total_slides_ridden > 0) {
+        summary->avg_slide_wait_time = (int)(total_slide_wait_time / total_slides_ridden);
+    }
+    else {
+        summary->avg_slide_wait_time = 0;
+    }
+
+    sortSlidesByPopularity(slides);
+    summary->busiest_slide_id = slides[0].id;
+
+    printf("\n--- Daily Summary ---\n");
+    printf("Number of visitors: %d\n", summary->total_visitors);
+    printf("Average time spent in the park: %d minutes\n", summary->avg_park_time);
+    printf("Average service time at the Ticket Booth: %d minutes\n", summary->avg_booth_service_time);
+    printf("Average waiting time at the Ticket Booth: %d minutes\n", summary->avg_booth_wait_time);
+    printf("Average waiting time on the slide: %d minutes\n", summary->avg_slide_wait_time);
+    printf("The most popular slide is slide number: %d\n", summary->busiest_slide_id);
+
+    saveDailySummary(summary);
+}
+
+void saveDailySummary(DailySummary* summary) {
+    FILE* file = fopen(DAILY_SUMMARY_FILE, "ab");
+    if (file == NULL) {
+        perror("Error opening file for saving");
+        return;
+    }
+    fwrite(summary, sizeof(DailySummary), 1, file);
+    fclose(file);
+}
+
+void loadOverallSummary(OverallSummary* summary) {
+    FILE* file = fopen(DAILY_SUMMARY_FILE, "rb");
+    if (file == NULL) {
+        memset(summary, 0, sizeof(OverallSummary));
+        return;
+    }
+
+    DailySummary daily_data;
+    double total_park_time_sum = 0.0;
+    double total_booth_service_time_sum = 0.0;
+    double total_booth_wait_time_sum = 0.0;
+    double total_slide_wait_time_sum = 0.0;
+
+    int slide_popularity[NUM_SLIDES + 1] = { 0 };
+
+    memset(summary, 0, sizeof(OverallSummary));
+
+    while (fread(&daily_data, sizeof(DailySummary), 1, file) == 1) {
+        summary->total_days++;
+        summary->total_visitors += daily_data.total_visitors;
+        total_park_time_sum += daily_data.avg_park_time;
+        total_booth_service_time_sum += daily_data.avg_booth_service_time;
+        total_booth_wait_time_sum += daily_data.avg_booth_wait_time;
+        total_slide_wait_time_sum += daily_data.avg_slide_wait_time;
+
+        slide_popularity[daily_data.busiest_slide_id]++;
+    }
+    fclose(file);
+
+    if (summary->total_days > 0) {
+        summary->avg_park_time = total_park_time_sum / summary->total_days;
+        summary->avg_booth_service_time = total_booth_service_time_sum / summary->total_days;
+        summary->avg_booth_wait_time = total_booth_wait_time_sum / summary->total_days;
+        summary->avg_slide_wait_time = total_slide_wait_time_sum / summary->total_days;
+    }
+
+    int max_popularity_count = 0;
+    int most_popular_slide = 0;
+    for (int i = 1; i <= NUM_SLIDES; i++) {
+        if (slide_popularity[i] > max_popularity_count) {
+            max_popularity_count = slide_popularity[i];
+            most_popular_slide = i;
+        }
+    }
+    summary->busiest_slide_id = most_popular_slide;
+    summary->busiest_slide_rides = max_popularity_count;
+}
+
+void showOverallSummary() {
+    OverallSummary overall_summary_data;
+    loadOverallSummary(&overall_summary_data);
+
+    if (overall_summary_data.total_days == 0) {
+        printf("No summary data available.\n");
+    }
+    else {
+        printf("\n--- Overall Summary ---\n");
+        printf("Number of days in simulation: %d\n", overall_summary_data.total_days);
+        printf("Total number of visitors: %d\n", overall_summary_data.total_visitors);
+        printf("Average time spent in the park: %.2f minutes\n", overall_summary_data.avg_park_time);
+        printf("Average service time at the Ticket Booth: %.2f minutes\n", overall_summary_data.avg_booth_service_time);
+        printf("Average waiting time at the Ticket Booth: %.2f minutes\n", overall_summary_data.avg_booth_wait_time);
+        printf("Average waiting time on the slide: %.2f minutes\n", overall_summary_data.avg_slide_wait_time);
+        printf("The most popular slide over all days is slide number: %d (was the busiest for %d days)\n", overall_summary_data.busiest_slide_id, overall_summary_data.busiest_slide_rides);
+    }
+}
