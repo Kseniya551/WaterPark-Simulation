@@ -1,3 +1,3 @@
 # WaterPark-Simulation
 
-הקוד נכתב בC++ בVISUAL STUDIO.
+הקוד נכתב בC בVISUAL STUDIO.
